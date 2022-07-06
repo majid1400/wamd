@@ -1,16 +1,9 @@
 import sys
 import json
 import pyqrcode
-
-# guard for pyqrcode
-# This is here because this example use pyqrcode
-# which require pypng installed
+import pika
 import png
-
-
 from io import BytesIO
-
-# Twisted Imports
 from twisted.internet import reactor
 from twisted.internet.defer import inlineCallbacks
 from twisted.internet.task import deferLater
@@ -24,22 +17,29 @@ from twisted.logger import (
     globalLogPublisher,
     Logger
 )
-
-
 from wamd.protocol import connectToWhatsAppServer, MultiDeviceWhatsAppClient
 from wamd.common import AuthState
 from wamd.messages import TextMessage
-
+from config import Config
 
 globalLogPublisher.addObserver(
     FilteringLogObserver(
         observer=textFileLogObserver(sys.stdout, timeFormat="%Y-%M-%d %H:%M:%S"),
-        predicates=[LogLevelFilterPredicate(defaultLogLevel=LogLevel.levelWithName("debug"))] # or info
+        predicates=[LogLevelFilterPredicate(defaultLogLevel=LogLevel.levelWithName("debug"))]  # or info
     )
 )
 
-
 log = Logger()
+
+
+def rabbit(msg):
+    credentials = pika.PlainCredentials(Config.USER_RABBIT, Config.PASS_RABBIT)
+    connection = pika.BlockingConnection(
+        pika.ConnectionParameters(Config.URL_RABBIT, 5672, Config.VIRTUAL_HOST_RABBIT, credentials))
+    channel = connection.channel()
+    channel.basic_publish(exchange='', routing_key=Config.ROUTING_KEY_RABBIT, body=json.dumps(msg))
+    print(" [x] Sent {}".format(msg))
+    connection.close()
 
 
 def protocolFactory():
@@ -60,10 +60,6 @@ def protocolFactory():
 
 
 def handleQr(qrInfo):
-    # this will require pyqrcode installed
-    # or whatever library or package used to
-    # render qr code.
-
     log.info("QR Info: {qrInfo}", qrInfo=qrInfo)
 
     qrObj = pyqrcode.create(b",".join(qrInfo), error="L")
@@ -72,43 +68,19 @@ def handleQr(qrInfo):
     qrBytes = qrIO.getvalue()
     qrIO.close()
 
-    # This will create a png file named qr.png
-    # Open it and scan it.
     with open("qr.png", "wb") as qrFileIO:
         qrFileIO.write(qrBytes)
 
 
 @inlineCallbacks
-def handleInbox(connection, message):
-    if not message['fromMe'] and not message['isRead']:
-        log.info("Unread Message: {unreadMessage}", unreadMessage=message)
-
-        # Send Read Receipt
-        yield connection.sendReadReceipt(message)
-
-        # Wait 5 seconds and then reply the message
-        yield deferLater(reactor, 5)
-
-        message = TextMessage(
-            to=message['from'],
-            conversation="What's up?"
-        )
-
-        try:
-            result = yield connection.relayMessage(message)
-        except:
-            log.failure("Send message failure")
-        else:
-            log.info("Result: {result}", result=result)
-
-
-def handleReceipt(connection, receipt):
-    log.info("Got Receipt: {receipt}", receipt=receipt)
+def extraMessage(connection, message):
+    json = message._attrs
+    print(json)
+    rabbit(json)
+    yield connection.sendReadReceipt(message)
 
 
 def handleClose(connection, reason):
-    log.info("Handle Close: {reason}", reason=reason)
-
     sessionPath = FilePath("session.json")
     if reason.value.isLoggedOut:
         try:
@@ -126,22 +98,12 @@ def onConnect(connection):
         connection.on("qr", handleQr)
 
     try:
-        # On first login (Scanning QR) the connection
-        # returned from connection.authenticate will
-        # be different from the parameter of onConnect.
-        # This is because after successfull pairing the
-        # connection is restarted. So attach any event
-        # to the connection only after successfull call to
-        # connection.authenticate.
         connection = yield connection.authenticate()
     except:
-        log.failure("Login Failure")
+        pass
     else:
-        log.info("Login Success")
-        connection.on("inbox", handleInbox)
-        connection.on("receipt", handleReceipt)
+        connection.on("inbox", extraMessage)
         connection.on("close", handleClose)
-
 
 
 connectToWhatsAppServer(
