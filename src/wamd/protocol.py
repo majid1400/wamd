@@ -20,7 +20,7 @@ from twisted.logger import Logger
 
 from autobahn.twisted.websocket import WebSocketClientProtocol, WebSocketClientFactory
 from autobahn.websocket.protocol import WebSocketProtocol
-
+from twisted.internet.protocol import ReconnectingClientFactory
 from dissononce.processing.impl.handshakestate import HandshakeState
 from dissononce.processing.impl.cipherstate import CipherState
 from dissononce.cipher.aesgcm import AESGCMCipher
@@ -1295,7 +1295,7 @@ class MultiDeviceWhatsAppClient(WebSocketClientProtocol):
         return messageTag
 
 
-class MultiDeviceWhatsAppClientFactory(WebSocketClientFactory):
+class MultiDeviceWhatsAppClientFactory(WebSocketClientFactory, ReconnectingClientFactory):
 
     _authState = None
     _savedProtocol = None
@@ -1353,11 +1353,13 @@ class MultiDeviceWhatsAppClientFactory(WebSocketClientFactory):
             d.callback(connection)
 
     def clientConnectionFailed(self, connector, reason):
+        self.retry(connector)
         if self.readyDeferred is not None:
             d, self.readyDeferred = self.readyDeferred, None
             d.errback(reason)
 
     def clientConnectionLost(self, connector, reason):
+        self.retry(connector)
         if self._authState is not None:
             connector.connect()
 
